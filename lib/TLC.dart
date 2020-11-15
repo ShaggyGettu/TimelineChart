@@ -1,24 +1,39 @@
 import 'package:flutter/material.dart';
 
+class TimelineChartController {
+  DateTime value;
+  void Function(DateTime) onChanged;
+
+  TimelineChartController({this.value}) {
+    if (this.value == null) {
+      this.value = DateTime.now();
+    }
+  }
+}
+
 class TimelineChart extends StatefulWidget {
   final double height;
-  final DateTime initalTime;
   final Widget Function(DateTime) titleBuilder;
-  final dynamic Function(DateTime) onChange;
   final Duration minZoom;
   final Duration maxZoom;
+  final List<DateTimeRange> busy;
+  final TimelineChartController controller;
+  final double secondsTickerHeight;
+  final double minutesTickerHeight;
+  final double hoursTickerHeight;
 
   TimelineChart({
     Key key,
-    @required this.initalTime,
+    @required this.controller,
     this.titleBuilder,
     this.height = 100,
     this.minZoom = const Duration(seconds: 4),
     this.maxZoom = const Duration(hours: 12),
-    this.onChange,
-  }) : super(key: key) {
-    // this.controller?.time = this.initalTime
-  }
+    this.busy,
+    this.secondsTickerHeight = 10,
+    this.minutesTickerHeight = 20,
+    this.hoursTickerHeight = 30,
+  }) : super(key: key);
 
   @override
   _TimelineChartState createState() => _TimelineChartState();
@@ -35,41 +50,24 @@ class _TimelineChartState extends State<TimelineChart> {
   @override
   void initState() {
     super.initState();
-    Duration medianZoom = Duration(
-        milliseconds:
-            ((widget.minZoom + widget.maxZoom).abs().inMilliseconds / 2)
-                .ceil());
-    _baseWindowSize = medianZoom;
+    _baseWindowSize = Duration(hours: 2);
     this.windowSize = _baseWindowSize;
-
-    winRange = DateTimeRange(
-      start: widget.initalTime.subtract(
-          Duration(milliseconds: (medianZoom.inMilliseconds / 2).ceil())),
-      end: widget.initalTime
-          .add(Duration(milliseconds: (medianZoom.inMilliseconds / 2).floor())),
-    );
-  }
-
-  DateTime getCurrentTime() {
-    Duration d = winRange.end.difference(winRange.start).abs();
-    DateTime newT = winRange.start
-        .add(Duration(milliseconds: (d.inMilliseconds / 2).floor()));
-    if (widget.onChange != null) {
-      widget.onChange(newT);
-    }
-    return newT;
   }
 
   @override
   Widget build(BuildContext context) {
     screenSize = MediaQuery.of(context).size;
 
+    winRange = DateTimeRange(
+      start: widget.controller.value.subtract(
+          Duration(milliseconds: (windowSize.inMilliseconds / 2).ceil())),
+      end: widget.controller.value
+          .add(Duration(milliseconds: (windowSize.inMilliseconds / 2).floor())),
+    );
+
     shiftWindow(Duration shift) {
       setState(() {
-        winRange = DateTimeRange(
-          start: winRange.start.subtract(shift),
-          end: winRange.end.subtract(shift),
-        );
+        widget.controller.value = widget.controller.value.subtract(shift);
       });
     }
 
@@ -95,8 +93,8 @@ class _TimelineChartState extends State<TimelineChart> {
       mainAxisSize: MainAxisSize.min,
       children: [
         widget.titleBuilder != null
-            ? widget.titleBuilder(getCurrentTime())
-            : Text(getCurrentTime().toString()),
+            ? widget.titleBuilder(widget.controller.value)
+            : Text(widget.controller.value.toString()),
         GestureDetector(
           onScaleStart: (details) {
             _baseScaleFactor = _scaleFactor;
@@ -112,12 +110,14 @@ class _TimelineChartState extends State<TimelineChart> {
           },
           onHorizontalDragUpdate: (details) {
             double shiftRatio = details.delta.dx / screenSize.width;
+
             Duration shift = Duration(
                 milliseconds:
                     (this.windowSize.inMilliseconds * shiftRatio).floor());
             setState(() {
               shiftWindow(shift);
             });
+            widget.controller.onChanged(widget.controller.value);
           },
           child: Container(
             // color: Colors.white,
@@ -144,6 +144,10 @@ class _TimelineChartState extends State<TimelineChart> {
                   child: CustomPaint(
                     painter: Tickers(
                       range: this.winRange,
+                      secondsTickerHeight: widget.secondsTickerHeight,
+                      minutesTickerHeight: widget.minutesTickerHeight,
+                      hoursTickerHeight: widget.hoursTickerHeight,
+                      busy: widget.busy,
                     ),
                   ),
                 ),
@@ -165,10 +169,15 @@ class _TimelineChartState extends State<TimelineChart> {
 
 class Tickers extends CustomPainter {
   final DateTimeRange range;
+  final double secondsTickerHeight;
+  final double minutesTickerHeight;
+  final double hoursTickerHeight;
+
   int _secMod;
   int _minMod;
   int _hourMod;
   Duration _duration;
+  List<DateTimeRange> busy;
 
   final TextPainter textPaint = new TextPainter(
     textAlign: TextAlign.left,
@@ -190,8 +199,14 @@ class Tickers extends CustomPainter {
     ..strokeWidth = 2
     ..color = Colors.black;
 
+  Paint _rectPaint = Paint()..color = Colors.blue[200];
+
   Tickers({
     this.range,
+    this.secondsTickerHeight,
+    this.minutesTickerHeight,
+    this.hoursTickerHeight,
+    this.busy,
   }) {
     _secMod = 1;
     _minMod = 1;
@@ -235,13 +250,45 @@ class Tickers extends CustomPainter {
     }
   }
 
+  paintRect(Canvas canvas, Size size, double start, double end) {
+    canvas.drawRect(Rect.fromPoints(Offset(start, size.height), Offset(end, 0)),
+        _rectPaint);
+  }
+
+  paintBusy(Canvas canvas, Size size, DateTime start, DateTime end) {
+    if (end.isBefore(range.start) || start.isAfter(range.end)) {
+      return;
+    }
+
+    if (start.isBefore(range.start)) {
+      start = range.start;
+    }
+
+    if (end.isAfter(range.end)) {
+      end = range.end;
+    }
+
+    double rectOffset = (range.start.difference(start).abs().inMilliseconds /
+        this._duration.inMilliseconds);
+    rectOffset *= size.width;
+
+    double rectEnd = (range.start.difference(end).abs().inMilliseconds /
+        this._duration.inMilliseconds);
+    rectEnd *= size.width;
+
+    paintRect(canvas, size, rectOffset, rectEnd);
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     double offsetStart;
     double realStep;
     Duration stepDuration;
-
     double step = size.width / (_duration.inMilliseconds / 1000);
+
+    for (DateTimeRange b in (this.busy ?? [])) {
+      paintBusy(canvas, size, b.start, b.end);
+    }
 
     if (_secMod != 60) {
       realStep = step;
@@ -268,9 +315,7 @@ class Tickers extends CustomPainter {
     }
 
     DateTime t = range.start;
-
     t = t.subtract(Duration(milliseconds: t.millisecond));
-
     offsetStart = offsetStart == 0 ? 1 : offsetStart;
 
     for (double i = offsetStart * realStep; i < size.width; i += realStep) {
@@ -339,12 +384,12 @@ class Tickers extends CustomPainter {
       canvas,
       new Offset(
         distance - (textPaint.width / 2),
-        size.height - 25 - (textPaint.width / 2),
+        size.height - this.hoursTickerHeight - (textPaint.width / 2),
       ),
     );
     canvas.drawLine(
       Offset(distance, size.height),
-      Offset(distance, size.height - 30),
+      Offset(distance, size.height - this.hoursTickerHeight),
       _hoursPaint,
     );
   }
@@ -367,12 +412,12 @@ class Tickers extends CustomPainter {
       canvas,
       new Offset(
         distance - (textPaint.width / 2),
-        size.height - 20 - (textPaint.width / 2),
+        size.height - this.minutesTickerHeight - (textPaint.width / 2),
       ),
     );
     canvas.drawLine(
       Offset(distance, size.height),
-      Offset(distance, size.height - 20),
+      Offset(distance, size.height - this.minutesTickerHeight),
       _minutesPaint,
     );
   }
@@ -395,12 +440,12 @@ class Tickers extends CustomPainter {
       canvas,
       new Offset(
         distance - (textPaint.width / 2),
-        size.height - 5 - (textPaint.width / 2),
+        size.height - this.secondsTickerHeight - (textPaint.width / 2),
       ),
     );
     canvas.drawLine(
       Offset(distance, size.height),
-      Offset(distance, size.height - 10),
+      Offset(distance, size.height - this.secondsTickerHeight),
       _secondsPaint,
     );
   }
